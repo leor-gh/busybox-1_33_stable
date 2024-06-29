@@ -718,7 +718,7 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
 	 * random xid field (we override it below),
 	 * client-id option (unless -C), message type option:
 	 */
-	init_packet(&packet, DHCPDISCOVER);
+	init_packet(&packet, requested ? DHCPREQUEST : DHCPDISCOVER);
 
 	packet.xid = xid;
 	if (requested)
@@ -731,7 +731,7 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
 	add_client_options(&packet);
 
 	if (msgs++ < 3)
-	bb_info_msg("sending %s", "discover");
+	bb_info_msg("sending %s", requested ? "request" : "discover");
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
@@ -1478,6 +1478,8 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 						xid = random_xid();
 					/* broadcast */
 					send_discover(xid, requested_ip);
+					if (requested_ip)
+						client_data.state = REQUESTING;
 					timeout = discover_timeout;
 					packet_num++;
 					continue;
