@@ -709,7 +709,7 @@ static int bcast_or_ucast(struct dhcp_packet *packet, uint32_t ciaddr, uint32_t 
 
 /* Broadcast a DHCP discover packet to the network, with an optionally requested IP */
 /* NOINLINE: limit stack usage in caller */
-static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
+static NOINLINE int send_discover(uint32_t xid, uint32_t *requested)
 {
 	struct dhcp_packet packet;
 
@@ -717,11 +717,11 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
 	 * random xid field (we override it below),
 	 * client-id option (unless -C), message type option:
 	 */
-	init_packet(&packet, requested ? DHCPREQUEST : DHCPDISCOVER);
+	init_packet(&packet, *requested ? DHCPREQUEST : DHCPDISCOVER);
 
 	packet.xid = xid;
-	if (requested)
-		udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
+	if (*requested)
+		udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, *requested);
 
 	/* Add options: maxsize,
 	 * optionally: hostname, fqdn, vendorclass,
@@ -729,7 +729,7 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
 	 */
 	add_client_options(&packet);
 
-	bb_info_msg("sending %s", requested ? "request" : "discover");
+	bb_info_msg("sending %s", *requested ? "request" : "discover");
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
@@ -1003,6 +1003,7 @@ static NOINLINE int udhcp_recv_raw_packet(struct dhcp_packet *dhcp_pkt, int fd)
 #define RENEW_REQUESTED 5
 /* release, possibly manually requested (SIGUSR2) */
 #define RELEASED        6
+#define REBOOTING       7
 
 static int udhcp_raw_socket(int ifindex)
 {
@@ -1391,7 +1392,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 	/* Create pidfile */
 	write_pidfile(client_data.pidfile);
 	/* Goes to stdout (unless NOMMU) and possibly syslog */
-	bb_simple_info_msg("started, v"BB_VER);
+	bb_simple_info_msg("started with REBOOTING support, v"BB_VER);
 	/* We want random_xid to be random... */
 	srand(monotonic_us());
 
@@ -1466,13 +1467,13 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 
 			switch (client_data.state) {
 			case INIT_SELECTING:
+			case REBOOTING:
 				if (!discover_retries || packet_num < discover_retries) {
 					if (packet_num == 0)
 						xid = random_xid();
 					/* broadcast */
-					send_discover(xid, requested_ip);
-					if (requested_ip)
-						client_data.state = REQUESTING;
+					send_discover(xid, &requested_ip);
+					client_data.state = requested_ip ? REBOOTING : INIT_SELECTING;
 					timeout = discover_timeout;
 					packet_num++;
 					continue;
@@ -1718,6 +1719,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 		case RENEWING:
 		case RENEW_REQUESTED:
 		case REBINDING:
+		case REBOOTING:
 			if (*message == DHCPACK) {
 				unsigned start;
 				uint32_t lease_seconds;
