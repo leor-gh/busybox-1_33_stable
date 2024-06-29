@@ -277,8 +277,13 @@ uint8_t* FAST_FUNC udhcp_scan_options(struct dhcp_packet *packet, struct dhcp_sc
 			goto complain; /* complain and return NULL */
 		len = 2 + scan_state->optionptr[OPT_LEN];
 		scan_state->rem -= len;
-		/* So far no valid option with length 0 known. */
-		if (scan_state->rem < 0 || scan_state->optionptr[OPT_LEN] == 0)
+		/* skip any options with zero length */
+		if (scan_state->optionptr[OPT_LEN] == 0) {
+			scan_state->optionptr += 2;
+			bb_simple_error_msg("warning: zero length DHCP option violates rfc2132, skipping");
+			continue;
+		}
+		if (scan_state->rem < 0)
 			goto complain; /* complain and return NULL */
 
 		if (scan_state->optionptr[OPT_CODE] == DHCP_OPTION_OVERLOAD) {

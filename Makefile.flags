@@ -158,6 +158,12 @@ endif
 # libm may be needed for dc, awk, ntpd
 # librt may be needed for clock_gettime()
 
+# nslookup_lede might need the resolv library
+RESOLV_AVAILABLE := $(shell echo 'int main(void){res_init();return 0;}' >resolvtest.c; $(CC) $(CFLAGS) -include resolv.h -lresolv -o /dev/null resolvtest.c >/dev/null 2>&1 && echo "y"; rm resolvtest.c)
+ifeq ($(RESOLV_AVAILABLE),y)
+LDLIBS += resolv
+endif
+
 # libpam may use libpthread, libdl and/or libaudit.
 # On some platforms that requires an explicit -lpthread, -ldl, -laudit.
 # However, on *other platforms* it fails when some of those flags
