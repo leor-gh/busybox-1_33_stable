@@ -729,7 +729,13 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t *requested)
 	 */
 	add_client_options(&packet);
 
-	bb_info_msg("sending %s", *requested ? "request" : "discover");
+	if (*requested) {
+		struct in_addr temp_addr;
+		temp_addr.s_addr = *requested;
+		bb_info_msg("sending request for %s", inet_ntoa(temp_addr));
+	} else
+		bb_info_msg("sending %s", "discover");
+
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
