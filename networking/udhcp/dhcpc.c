@@ -707,9 +707,36 @@ static int bcast_or_ucast(struct dhcp_packet *packet, uint32_t ciaddr, uint32_t 
 	return raw_bcast_from_client_data_ifindex(packet, ciaddr);
 }
 
+/* Broadcast a DHCP request packet to the network for the requested IP */
+/* NOINLINE: limit stack usage in caller */
+static NOINLINE int reboot_request(uint32_t xid, uint32_t requested)
+{
+	struct dhcp_packet packet;
+	struct in_addr temp_addr;
+
+	/* Fill in: op, htype, hlen, cookie, chaddr fields,
+	 * random xid field (we override it below),
+	 * client-id option (unless -C), message type option:
+	 */
+	init_packet(&packet, DHCPREQUEST);
+
+	packet.xid = xid;
+	udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
+
+	/* Add options: maxsize,
+	 * optionally: hostname, fqdn, vendorclass,
+	 * "param req" option according to -O, options specified with -x
+	 */
+	add_client_options(&packet);
+
+	temp_addr.s_addr = requested;
+	bb_info_msg("sending request for %s", inet_ntoa(temp_addr));
+	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
+}
+
 /* Broadcast a DHCP discover packet to the network, with an optionally requested IP */
 /* NOINLINE: limit stack usage in caller */
-static NOINLINE int send_discover(uint32_t xid, uint32_t *requested)
+static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
 {
 	struct dhcp_packet packet;
 	static int msgs = 0;
@@ -718,11 +745,11 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t *requested)
 	 * random xid field (we override it below),
 	 * client-id option (unless -C), message type option:
 	 */
-	init_packet(&packet, *requested ? DHCPREQUEST : DHCPDISCOVER);
+	init_packet(&packet, DHCPDISCOVER);
 
 	packet.xid = xid;
-	if (*requested)
-		udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, *requested);
+	if (requested)
+		udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
 
 	/* Add options: maxsize,
 	 * optionally: hostname, fqdn, vendorclass,
@@ -730,15 +757,8 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t *requested)
 	 */
 	add_client_options(&packet);
 
-	if (msgs++ < 3) {
-		if (*requested) {
-			struct in_addr temp_addr;
-			temp_addr.s_addr = *requested;
-			bb_info_msg("sending request for %s", inet_ntoa(temp_addr));
-		} else
-		bb_info_msg("sending %s", "discover");
-	}
-	else *requested = 0;	// remove requested_ip if no response for a few times
+	if (msgs++ < 3)
+	bb_info_msg("sending %s", "discover");
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
@@ -1139,6 +1159,7 @@ static void perform_renew(void)
 		client_data.state = INIT_SELECTING;
 		break;
 	case INIT_SELECTING:
+	case REBOOTING:
 		break;
 	}
 }
@@ -1404,7 +1425,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 	/* We want random_xid to be random... */
 	srand(monotonic_us());
 
-	client_data.state = INIT_SELECTING;
+	client_data.state = requested_ip ? REBOOTING : INIT_SELECTING;
 	udhcp_run_script(NULL, "deconfig");
 	change_listen_mode(LISTEN_RAW);
 	packet_num = 0;
@@ -1480,14 +1501,30 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 			already_waited_sec = 0;
 
 			switch (client_data.state) {
-			case INIT_SELECTING:
 			case REBOOTING:
+				if (packet_num == 6) {
+					client_data.state = INIT_SELECTING;
+					client_data.first_secs = 0; /* make secs field count from 0 */
+					requested_ip = 0;
+					packet_num = 0;
+					timeout = 0;
+					already_waited_sec = 0;
+					goto case_INIT_SELECTING;
+				}
+				if (packet_num == 0)
+					xid = random_xid();
+				/* broadcast */
+				reboot_request(xid, requested_ip);
+				timeout = discover_timeout;
+				packet_num++;
+				continue;
+			case INIT_SELECTING:
+			case_INIT_SELECTING:
 				if (!discover_retries || packet_num < discover_retries) {
 					if (packet_num == 0)
 						xid = random_xid();
 					/* broadcast */
-					send_discover(xid, &requested_ip);
-					client_data.state = requested_ip ? REBOOTING : INIT_SELECTING;
+					send_discover(xid, requested_ip);
 					timeout = discover_timeout;
 					packet_num++;
 					continue;
