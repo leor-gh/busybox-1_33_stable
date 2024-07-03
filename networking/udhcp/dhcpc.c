@@ -707,33 +707,6 @@ static int bcast_or_ucast(struct dhcp_packet *packet, uint32_t ciaddr, uint32_t 
 	return raw_bcast_from_client_data_ifindex(packet, ciaddr);
 }
 
-/* Broadcast a DHCP request packet to the network for the requested IP */
-/* NOINLINE: limit stack usage in caller */
-static NOINLINE int reboot_request(uint32_t xid, uint32_t requested)
-{
-	struct dhcp_packet packet;
-	struct in_addr temp_addr;
-
-	/* Fill in: op, htype, hlen, cookie, chaddr fields,
-	 * random xid field (we override it below),
-	 * client-id option (unless -C), message type option:
-	 */
-	init_packet(&packet, DHCPREQUEST);
-
-	packet.xid = xid;
-	udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
-
-	/* Add options: maxsize,
-	 * optionally: hostname, fqdn, vendorclass,
-	 * "param req" option according to -O, options specified with -x
-	 */
-	add_client_options(&packet);
-
-	temp_addr.s_addr = requested;
-	bb_info_msg("sending request for %s", inet_ntoa(temp_addr));
-	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
-}
-
 /* Broadcast a DHCP discover packet to the network, with an optionally requested IP */
 /* NOINLINE: limit stack usage in caller */
 static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
@@ -765,7 +738,7 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
  * "The client _broadcasts_ a DHCPREQUEST message..."
  */
 /* NOINLINE: limit stack usage in caller */
-static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requested)
+static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requested, uint8_t reboot)
 {
 	struct dhcp_packet packet;
 	struct in_addr temp_addr;
@@ -791,6 +764,7 @@ static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requeste
 	packet.xid = xid;
 	udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
 
+	if (!reboot)
 	udhcp_add_simple_option(&packet, DHCP_SERVER_ID, server);
 
 	/* Add options: maxsize,
@@ -800,7 +774,7 @@ static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requeste
 	add_client_options(&packet);
 
 	temp_addr.s_addr = requested;
-	bb_info_msg("sending select for %s", inet_ntoa(temp_addr));
+	bb_info_msg("sending %s for %s", reboot ? "request" : "select", inet_ntoa(temp_addr));
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
@@ -1507,7 +1481,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 				if (packet_num == 0)
 					xid = random_xid();
 				/* broadcast */
-				reboot_request(xid, requested_ip);
+				send_select(xid, server_addr, requested_ip, 1);
 				timeout = discover_timeout;
 				packet_num++;
 				continue;
@@ -1550,7 +1524,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 			case REQUESTING:
 				if (packet_num < 3) {
 					/* send broadcast select packet */
-					send_select(xid, server_addr, requested_ip);
+					send_select(xid, server_addr, requested_ip, 0);
 					timeout = discover_timeout;
 					packet_num++;
 					continue;
