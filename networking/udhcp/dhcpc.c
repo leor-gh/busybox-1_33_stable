@@ -738,7 +738,7 @@ static NOINLINE int send_discover(uint32_t xid, uint32_t requested)
  * "The client _broadcasts_ a DHCPREQUEST message..."
  */
 /* NOINLINE: limit stack usage in caller */
-static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requested)
+static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requested, uint8_t reboot)
 {
 	struct dhcp_packet packet;
 	struct in_addr temp_addr;
@@ -764,6 +764,7 @@ static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requeste
 	packet.xid = xid;
 	udhcp_add_simple_option(&packet, DHCP_REQUESTED_IP, requested);
 
+	if (!reboot)
 	udhcp_add_simple_option(&packet, DHCP_SERVER_ID, server);
 
 	/* Add options: maxsize,
@@ -773,7 +774,7 @@ static NOINLINE int send_select(uint32_t xid, uint32_t server, uint32_t requeste
 	add_client_options(&packet);
 
 	temp_addr.s_addr = requested;
-	bb_info_msg("sending select for %s", inet_ntoa(temp_addr));
+	bb_info_msg("sending %s for %s", reboot ? "request" : "select", inet_ntoa(temp_addr));
 	return raw_bcast_from_client_data_ifindex(&packet, INADDR_ANY);
 }
 
@@ -1003,6 +1004,7 @@ static NOINLINE int udhcp_recv_raw_packet(struct dhcp_packet *dhcp_pkt, int fd)
 #define RENEW_REQUESTED 5
 /* release, possibly manually requested (SIGUSR2) */
 #define RELEASED        6
+#define REBOOTING       7
 
 static int udhcp_raw_socket(int ifindex)
 {
@@ -1130,6 +1132,7 @@ static void perform_renew(void)
 		client_data.state = INIT_SELECTING;
 		break;
 	case INIT_SELECTING:
+	case REBOOTING:
 		break;
 	}
 }
@@ -1391,11 +1394,11 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 	/* Create pidfile */
 	write_pidfile(client_data.pidfile);
 	/* Goes to stdout (unless NOMMU) and possibly syslog */
-	bb_simple_info_msg("started, v"BB_VER);
+	bb_simple_info_msg("started with REBOOTING support, v"BB_VER);
 	/* We want random_xid to be random... */
 	srand(monotonic_us());
 
-	client_data.state = INIT_SELECTING;
+	client_data.state = requested_ip ? REBOOTING : INIT_SELECTING;
 	udhcp_run_script(NULL, "deconfig");
 	change_listen_mode(LISTEN_RAW);
 	packet_num = 0;
@@ -1465,7 +1468,25 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 			already_waited_sec = 0;
 
 			switch (client_data.state) {
+			case REBOOTING:
+				if (packet_num == 6) {
+					client_data.state = INIT_SELECTING;
+					client_data.first_secs = 0; /* make secs field count from 0 */
+					requested_ip = 0;
+					packet_num = 0;
+					timeout = 0;
+					already_waited_sec = 0;
+					goto case_INIT_SELECTING;
+				}
+				if (packet_num == 0)
+					xid = random_xid();
+				/* broadcast */
+				send_select(xid, server_addr, requested_ip, 1);
+				timeout = discover_timeout;
+				packet_num++;
+				continue;
 			case INIT_SELECTING:
+			case_INIT_SELECTING:
 				if (!discover_retries || packet_num < discover_retries) {
 					if (packet_num == 0)
 						xid = random_xid();
@@ -1503,7 +1524,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 			case REQUESTING:
 				if (packet_num < 3) {
 					/* send broadcast select packet */
-					send_select(xid, server_addr, requested_ip);
+					send_select(xid, server_addr, requested_ip, 0);
 					timeout = discover_timeout;
 					packet_num++;
 					continue;
@@ -1716,6 +1737,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 		case RENEWING:
 		case RENEW_REQUESTED:
 		case REBINDING:
+		case REBOOTING:
 			if (*message == DHCPACK) {
 				unsigned start;
 				uint32_t lease_seconds;
